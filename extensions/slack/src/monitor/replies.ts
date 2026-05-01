@@ -1,4 +1,5 @@
 import type { MarkdownTableMode, OpenClawConfig } from "openclaw/plugin-sdk/config-types";
+import { applyChannelMessageSendingHook } from "openclaw/plugin-sdk/hook-runtime";
 import {
   chunkMarkdownTextWithMode,
   isSilentReplyText,
@@ -64,7 +65,18 @@ export async function deliverReplies(params: {
       if (trimmed && isSilentReplyText(trimmed, SILENT_REPLY_TOKEN)) {
         continue;
       }
-      await sendMessageSlack(params.target, trimmed, {
+      const hookOutcome = await applyChannelMessageSendingHook({
+        to: params.target,
+        content: trimmed,
+        channel: "slack",
+        accountId: params.accountId,
+        replyToId: payload.replyToId,
+        threadId: threadTs,
+      });
+      if (hookOutcome.cancel) {
+        continue;
+      }
+      await sendMessageSlack(params.target, hookOutcome.content, {
         cfg: params.cfg,
         token: params.token,
         threadTs,
@@ -89,7 +101,18 @@ export async function deliverReplies(params: {
           }
         : undefined,
       sendText: async (trimmed) => {
-        await sendMessageSlack(params.target, trimmed, {
+        const hookOutcome = await applyChannelMessageSendingHook({
+          to: params.target,
+          content: trimmed,
+          channel: "slack",
+          accountId: params.accountId,
+          replyToId: payload.replyToId,
+          threadId: threadTs,
+        });
+        if (hookOutcome.cancel) {
+          return;
+        }
+        await sendMessageSlack(params.target, hookOutcome.content, {
           cfg: params.cfg,
           token: params.token,
           threadTs,
@@ -98,7 +121,19 @@ export async function deliverReplies(params: {
         });
       },
       sendMedia: async ({ mediaUrl, caption }) => {
-        await sendMessageSlack(params.target, caption ?? "", {
+        const hookOutcome = await applyChannelMessageSendingHook({
+          to: params.target,
+          content: caption ?? "",
+          channel: "slack",
+          accountId: params.accountId,
+          replyToId: payload.replyToId,
+          threadId: threadTs,
+          metadata: { mediaUrls: [mediaUrl] },
+        });
+        if (hookOutcome.cancel) {
+          return;
+        }
+        await sendMessageSlack(params.target, hookOutcome.content, {
           cfg: params.cfg,
           token: params.token,
           mediaUrl,

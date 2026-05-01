@@ -5,6 +5,58 @@ vi.mock("../send.js", () => ({
   sendMessageSlack: (...args: unknown[]) => sendMock(...args),
 }));
 
+const hookMocks = vi.hoisted(() => ({
+  runner: {
+    hasHooks: vi.fn<(_hookName?: string) => boolean>(() => false),
+    runMessageSending: vi.fn<(event: unknown, ctx: unknown) => Promise<unknown>>(
+      async () => undefined,
+    ),
+  },
+}));
+vi.mock("openclaw/plugin-sdk/hook-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/hook-runtime")>();
+  return {
+    ...actual,
+    applyChannelMessageSendingHook: async (params: {
+      to: string;
+      content: string;
+      channel: string;
+      accountId?: string;
+      replyToId?: string | number;
+      threadId?: string | number;
+      conversationId?: string;
+      sessionKey?: string;
+      metadata?: Record<string, unknown>;
+    }) => {
+      if (!hookMocks.runner.hasHooks("message_sending")) {
+        return { cancel: false, content: params.content };
+      }
+      const result = (await hookMocks.runner.runMessageSending(
+        {
+          to: params.to,
+          content: params.content,
+          replyToId: params.replyToId,
+          threadId: params.threadId,
+          metadata: {
+            channel: params.channel,
+            accountId: params.accountId,
+            ...(params.metadata ?? {}),
+          },
+        },
+        {
+          channelId: params.channel,
+          accountId: params.accountId,
+          conversationId: params.conversationId ?? params.to,
+          sessionKey: params.sessionKey,
+        },
+      )) as { cancel?: boolean; content?: string } | undefined;
+      if (result?.cancel === true) return { cancel: true, content: params.content };
+      if (typeof result?.content === "string") return { cancel: false, content: result.content };
+      return { cancel: false, content: params.content };
+    },
+  };
+});
+
 let deliverReplies: typeof import("./replies.js").deliverReplies;
 let createSlackReplyDeliveryPlan: typeof import("./replies.js").createSlackReplyDeliveryPlan;
 let resolveDeliveredSlackReplyThreadTs: typeof import("./replies.js").resolveDeliveredSlackReplyThreadTs;
@@ -38,6 +90,10 @@ describe("deliverReplies identity passthrough", () => {
 
   beforeEach(() => {
     sendMock.mockReset();
+    hookMocks.runner.hasHooks.mockReset();
+    hookMocks.runner.hasHooks.mockReturnValue(false);
+    hookMocks.runner.runMessageSending.mockReset();
+    hookMocks.runner.runMessageSending.mockResolvedValue(undefined);
   });
   it("passes identity to sendMessageSlack for text replies", async () => {
     sendMock.mockResolvedValue(undefined);
@@ -149,6 +205,84 @@ describe("deliverReplies identity passthrough", () => {
         }),
       ],
     });
+  });
+
+  it("fires the message_sending plugin hook for text replies", async () => {
+    sendMock.mockResolvedValue(undefined);
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "message_sending",
+    );
+    hookMocks.runner.runMessageSending.mockResolvedValue(undefined);
+
+    await deliverReplies(baseParams());
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
+    const [event, ctx] = hookMocks.runner.runMessageSending.mock.calls[0]!;
+    expect(event).toMatchObject({ to: "C123", content: "hello" });
+    expect(ctx).toMatchObject({ channelId: "slack", conversationId: "C123" });
+    expect(sendMock).toHaveBeenCalledOnce();
+  });
+
+  it("cancels the underlying send when message_sending returns cancel:true", async () => {
+    sendMock.mockResolvedValue(undefined);
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "message_sending",
+    );
+    hookMocks.runner.runMessageSending.mockResolvedValue({ cancel: true });
+
+    await deliverReplies(baseParams());
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards modified content from message_sending to sendMessageSlack", async () => {
+    sendMock.mockResolvedValue(undefined);
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "message_sending",
+    );
+    hookMocks.runner.runMessageSending.mockResolvedValue({ content: "redacted" });
+
+    await deliverReplies(baseParams());
+
+    expect(sendMock).toHaveBeenCalledOnce();
+    expect(sendMock.mock.calls[0]?.[1]).toBe("redacted");
+  });
+
+  it("fires the message_sending plugin hook for block-only replies", async () => {
+    sendMock.mockResolvedValue(undefined);
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "message_sending",
+    );
+    hookMocks.runner.runMessageSending.mockResolvedValue(undefined);
+    const blocks = [{ type: "divider" }];
+
+    await deliverReplies(
+      baseParams({
+        replies: [{ text: "", channelData: { slack: { blocks } } }],
+      }),
+    );
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
+    expect(sendMock).toHaveBeenCalledOnce();
+  });
+
+  it("fires the message_sending plugin hook for media replies and forwards modified caption", async () => {
+    sendMock.mockResolvedValue(undefined);
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "message_sending",
+    );
+    hookMocks.runner.runMessageSending.mockResolvedValue({ content: "filtered caption" });
+
+    await deliverReplies(
+      baseParams({
+        replies: [{ text: "caption", mediaUrls: ["https://example.com/img.png"] }],
+      }),
+    );
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
+    expect(sendMock).toHaveBeenCalledOnce();
+    expect(sendMock.mock.calls[0]?.[1]).toBe("filtered caption");
   });
 
   it("rejects replies when merged Slack blocks exceed the platform limit", async () => {
