@@ -13,49 +13,9 @@ const hookMocks = vi.hoisted(() => ({
     ),
   },
 }));
-vi.mock("openclaw/plugin-sdk/hook-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/hook-runtime")>();
-  return {
-    ...actual,
-    applyChannelMessageSendingHook: async (params: {
-      to: string;
-      content: string;
-      channel: string;
-      accountId?: string;
-      replyToId?: string | number;
-      threadId?: string | number;
-      conversationId?: string;
-      sessionKey?: string;
-      metadata?: Record<string, unknown>;
-    }) => {
-      if (!hookMocks.runner.hasHooks("message_sending")) {
-        return { cancel: false, content: params.content };
-      }
-      const result = (await hookMocks.runner.runMessageSending(
-        {
-          to: params.to,
-          content: params.content,
-          replyToId: params.replyToId,
-          threadId: params.threadId,
-          metadata: {
-            channel: params.channel,
-            accountId: params.accountId,
-            ...(params.metadata ?? {}),
-          },
-        },
-        {
-          channelId: params.channel,
-          accountId: params.accountId,
-          conversationId: params.conversationId ?? params.to,
-          sessionKey: params.sessionKey,
-        },
-      )) as { cancel?: boolean; content?: string } | undefined;
-      if (result?.cancel === true) return { cancel: true, content: params.content };
-      if (typeof result?.content === "string") return { cancel: false, content: result.content };
-      return { cancel: false, content: params.content };
-    },
-  };
-});
+vi.mock("../../../../src/plugins/hook-runner-global.js", () => ({
+  getGlobalHookRunner: () => hookMocks.runner,
+}));
 
 let deliverReplies: typeof import("./replies.js").deliverReplies;
 let createSlackReplyDeliveryPlan: typeof import("./replies.js").createSlackReplyDeliveryPlan;
@@ -217,7 +177,7 @@ describe("deliverReplies identity passthrough", () => {
     await deliverReplies(baseParams());
 
     expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
-    const [event, ctx] = hookMocks.runner.runMessageSending.mock.calls[0]!;
+    const [event, ctx] = hookMocks.runner.runMessageSending.mock.calls[0];
     expect(event).toMatchObject({ to: "C123", content: "hello" });
     expect(ctx).toMatchObject({ channelId: "slack", conversationId: "C123" });
     expect(sendMock).toHaveBeenCalledOnce();

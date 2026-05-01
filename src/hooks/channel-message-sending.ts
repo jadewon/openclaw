@@ -26,6 +26,14 @@ export type ChannelMessageSendingHookParams = {
   threadId?: string | number;
   conversationId?: string;
   sessionKey?: string;
+  /**
+   * Free-form metadata forwarded to the plugin hook event. Channel
+   * dispatchers that fan one outbound payload into multiple sends (per-URL
+   * media chunks, per-chunk text) should pass per-call metadata here — e.g.
+   * a single-element `mediaUrls` array per media send rather than the
+   * payload's full mediaUrls list — so plugins observe one
+   * `message_sending` event per actual delivery attempt.
+   */
   metadata?: Record<string, unknown>;
 };
 
@@ -63,7 +71,7 @@ export async function applyChannelMessageSendingHook(
         metadata: {
           channel: params.channel,
           accountId: params.accountId,
-          ...(params.metadata ?? {}),
+          ...params.metadata,
         },
       },
       {
